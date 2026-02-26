@@ -16,14 +16,28 @@
         .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
         .loader { border-top-color: #3b82f6; animation: spinner 1.5s linear infinite; }
         @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        /* Ranking highlights */
+        .rank-1 { background-color: #fef3c7; border: 2px solid #fbbf24; } /* Gold */
+        .rank-2 { background-color: #f1f5f9; border: 2px solid #cbd5e1; } /* Silver */
+        .rank-3 { background-color: #ffedd5; border: 2px solid #fdba74; } /* Bronze */
     </style>
 </head>
 <body class="p-4 md:p-8">
     <div class="max-w-6xl mx-auto">
         <!-- Header -->
-        <header class="mb-8 text-center">
-            <h1 class="text-3xl font-bold text-gray-800 mb-2">🏘️ 우리 동네 아파트 실거래가 대시보드</h1>
-            <p class="text-gray-500">실시간 CSV 데이터를 기반으로 한 부동산 트렌드 분석</p>
+        <header class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+            <div class="text-left">
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">🏘️ 우리 동네 아파트 실거래가 대시보드</h1>
+                <p class="text-gray-500">실시간 CSV 데이터를 기반으로 한 부동산 트렌드 분석</p>
+            </div>
+            <!-- Filter Section -->
+            <div class="flex items-center gap-2">
+                <label for="district-filter" class="text-sm font-semibold text-gray-700">동네 선택:</label>
+                <select id="district-filter" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5 min-w-[150px]">
+                    <option value="전체">전체 보기</option>
+                </select>
+            </div>
         </header>
 
         <!-- Loading State -->
@@ -54,12 +68,21 @@
                 </div>
             </div>
 
-            <!-- Charts Section -->
-            <div class="grid grid-cols-1 gap-8 mb-8">
-                <div class="card p-6">
+            <!-- Charts & Ranking Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+                <!-- Chart -->
+                <div class="card p-6 lg:col-span-2">
                     <h2 class="text-xl font-semibold mb-4 text-gray-700">월별 평균 거래가격 추이</h2>
-                    <div class="h-[400px]">
+                    <div class="h-[350px]">
                         <canvas id="priceChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Ranking TOP 5 -->
+                <div class="card p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-700">🏆 비싼 아파트 TOP 5</h2>
+                    <div id="ranking-list" class="space-y-3">
+                        <!-- Ranking items injected by JS -->
                     </div>
                 </div>
             </div>
@@ -67,8 +90,8 @@
             <!-- Table Section -->
             <div class="card overflow-hidden">
                 <div class="p-6 border-b border-gray-100 flex justify-between items-center">
-                    <h2 class="text-xl font-semibold text-gray-700">최근 거래 목록</h2>
-                    <span class="text-sm text-gray-400">금액 순 정렬</span>
+                    <h2 class="text-xl font-semibold text-gray-700">상세 거래 내역</h2>
+                    <span id="list-count-label" class="text-sm text-gray-400">0개 항목</span>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse">
@@ -99,6 +122,9 @@
 
     <script>
         const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSuzgquQ9j2JdsyGsX4wJtQQ7iiubGCqhfH2dkNZa6ouU6Uj6H3kPt0_X7ddgw1jRXrUZ51Fz0YbE6F/pub?gid=851889144&single=true&output=csv';
+        
+        let rawData = [];
+        let priceChart = null;
 
         async function init() {
             try {
@@ -109,7 +135,16 @@
                     header: true,
                     skipEmptyLines: true,
                     complete: function(results) {
-                        processData(results.data);
+                        rawData = results.data.map(item => ({
+                            ...item,
+                            price: parseInt(item["거래금액(만원)"].replace(/,/g, '')),
+                            date: item["거래일자"],
+                            district: item["법정동"].trim(),
+                            month: item["거래일자"].substring(0, 7) // YYYY-MM
+                        }));
+                        
+                        setupFilter(rawData);
+                        updateDashboard("전체");
                     },
                     error: function(err) {
                         showError();
@@ -120,35 +155,50 @@
             }
         }
 
-        function processData(data) {
-            if (!data || data.length === 0) {
-                showError();
-                return;
-            }
+        function setupFilter(data) {
+            const filter = document.getElementById('district-filter');
+            const districts = [...new Set(data.map(item => item.district))].sort();
+            
+            districts.forEach(d => {
+                const option = document.createElement('option');
+                option.value = d;
+                option.textContent = d;
+                filter.appendChild(option);
+            });
 
-            // Convert string prices to numbers and dates for processing
-            const cleanData = data.map(item => ({
-                ...item,
-                price: parseInt(item["거래금액(만원)"].replace(/,/g, '')),
-                date: item["거래일자"],
-                month: item["거래일자"].substring(0, 7) // YYYY-MM
-            })).sort((a, b) => b.price - a.price); // Price Descending
+            filter.addEventListener('change', (e) => {
+                updateDashboard(e.target.value);
+            });
+        }
 
-            // Summary Stats
-            const prices = cleanData.map(d => d.price);
-            const count = cleanData.length;
-            const avg = Math.round(prices.reduce((a, b) => a + b, 0) / count);
-            const max = Math.max(...prices);
-            const min = Math.min(...prices);
+        function updateDashboard(selectedDistrict) {
+            // Filter data based on selected district
+            const filteredData = selectedDistrict === "전체" 
+                ? [...rawData] 
+                : rawData.filter(item => item.district === selectedDistrict);
+
+            // Sort by price descending
+            filteredData.sort((a, b) => b.price - a.price);
+
+            // 1. Summary Stats
+            const prices = filteredData.map(d => d.price);
+            const count = filteredData.length;
+            const avg = count > 0 ? Math.round(prices.reduce((a, b) => a + b, 0) / count) : 0;
+            const max = count > 0 ? Math.max(...prices) : 0;
+            const min = count > 0 ? Math.min(...prices) : 0;
 
             document.getElementById('stat-count').innerText = count.toLocaleString() + '건';
             document.getElementById('stat-avg').innerText = avg.toLocaleString();
             document.getElementById('stat-max').innerText = max.toLocaleString();
             document.getElementById('stat-min').innerText = min.toLocaleString();
+            document.getElementById('list-count-label').innerText = count.toLocaleString() + '개 항목';
 
-            // Chart Data: Monthly Average
+            // 2. Render Ranking TOP 5
+            renderRanking(filteredData.slice(0, 5));
+
+            // 3. Prepare Chart Data (Monthly Average)
             const monthlyPrices = {};
-            cleanData.forEach(item => {
+            filteredData.forEach(item => {
                 if (!monthlyPrices[item.month]) {
                     monthlyPrices[item.month] = { sum: 0, count: 0 };
                 }
@@ -160,16 +210,57 @@
             const avgMonthlyData = sortedMonths.map(m => Math.round(monthlyPrices[m].sum / monthlyPrices[m].count));
 
             renderChart(sortedMonths, avgMonthlyData);
-            renderTable(cleanData);
+
+            // 4. Render Table
+            renderTable(filteredData);
 
             // Toggle visibility
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('content').classList.remove('hidden');
         }
 
+        function renderRanking(topData) {
+            const rankingList = document.getElementById('ranking-list');
+            if (topData.length === 0) {
+                rankingList.innerHTML = '<p class="text-center text-gray-400 py-10">데이터가 없습니다.</p>';
+                return;
+            }
+
+            rankingList.innerHTML = topData.map((item, index) => {
+                let rankClass = "";
+                let medal = "";
+                if (index === 0) { rankClass = "rank-1"; medal = "🥇"; }
+                else if (index === 1) { rankClass = "rank-2"; medal = "🥈"; }
+                else if (index === 2) { rankClass = "rank-3"; medal = "🥉"; }
+                else { rankClass = "bg-gray-50 border border-gray-100"; medal = (index + 1); }
+
+                return `
+                    <div class="flex items-center p-3 rounded-lg ${rankClass} transition-transform hover:scale-[1.02]">
+                        <div class="w-8 h-8 flex items-center justify-center font-bold text-lg mr-3">
+                            ${medal}
+                        </div>
+                        <div class="flex-grow min-w-0">
+                            <p class="font-bold text-gray-800 text-sm truncate" title="${item["아파트명"]}">${item["아파트명"]}</p>
+                            <p class="text-xs text-gray-500">${item["전용면적(㎡)"]}㎡ · ${item["층"]}층</p>
+                        </div>
+                        <div class="text-right ml-2">
+                            <p class="font-bold text-blue-700">${item.price.toLocaleString()}</p>
+                            <p class="text-[10px] text-gray-400">만원</p>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
         function renderChart(labels, data) {
             const ctx = document.getElementById('priceChart').getContext('2d');
-            new Chart(ctx, {
+            
+            // Destroy existing chart to prevent overlap
+            if (priceChart) {
+                priceChart.destroy();
+            }
+
+            priceChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: labels,
@@ -209,9 +300,14 @@
 
         function renderTable(data) {
             const tbody = document.getElementById('table-body');
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="p-10 text-center text-gray-400">조회된 데이터가 없습니다.</td></tr>';
+                return;
+            }
+
             tbody.innerHTML = data.map(item => `
                 <tr class="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                    <td class="p-4 text-gray-500">${item["거래일자"]}</td>
+                    <td class="p-4 text-gray-500 whitespace-nowrap">${item["거래일자"]}</td>
                     <td class="p-4 font-semibold text-gray-800">${item["아파트명"]}</td>
                     <td class="p-4 text-gray-600">${item["법정동"]}</td>
                     <td class="p-4 text-gray-600">${item["전용면적(㎡)"]}㎡</td>
